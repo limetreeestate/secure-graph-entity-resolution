@@ -19,7 +19,7 @@ public:
     }
 
     void fit(arma::Mat<T> &data, uint8_t noOfIterations, bool printMode = true) {
-        bool status = kmeans(means, data, k, arma::random_spread, 10, true);
+        bool status = kmeans(means, data, k, arma::random_spread, noOfIterations, true);
 
         if(status == false) {
             std::cout << "clustering failed" << std::endl;
@@ -27,7 +27,7 @@ public:
     }
 
     void fit(arma::Mat<T> &data, arma::Mat<T> &means, uint8_t noOfIterations, bool printMode = true) {
-        bool status = kmeans(means, data, k, arma::keep_existing, 10, true);
+        bool status = kmeans(means, data, k, arma::keep_existing, noOfIterations, true);
 
         if(status == false) {
             std::cout << "clustering failed" << std::endl;
