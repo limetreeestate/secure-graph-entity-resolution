@@ -152,21 +152,30 @@ int main() {
     //Prepare data
     Mat<float> ids = data.col(0);
     data.shed_col(0);
+    inplace_trans(data, "lowmem");
 
     //Train kmeans clustering for 16 clusters
-    Kmeans<float> model(16);
+    Kmeans<float> model(3);
     model.fit(data, 10);
 
     //Apply clustering to bloom filters
     Mat<short> pred = model.apply(data);
 
-    //Share cluster data with other workers
-
-    //Create cluster representative vector
-
-
-
-
+    //Re-transpose data for saving
+    inplace_trans(data, "lowmem");
+    //Join with graph ids again
+    data = join_rows(ids, data);
+    //For each cluster write bloom filters of said cluster into a separate file
+    int clusterCount = model.getMeans().n_cols;
+    for(int i = 0; i < clusterCount; i++) {
+        //Filter indices of filters belonging to cluster
+        Col<uword> indices = find(pred == i);
+        //Filter out cluster data
+        Mat<short> clusterData = conv_to<Mat<short>>::from(data.rows(indices));
+        //Write to file
+        string outfile = "cluster" + to_string(i) +"filters.txt";
+        clusterData.save(outfile, arma::csv_ascii);
+    }
 
 }
 
