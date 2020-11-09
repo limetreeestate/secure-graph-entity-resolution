@@ -1,6 +1,7 @@
 #include <iostream>
 #include "bh.h"
 #include "Kmeans.h"
+#include "MinHash.hpp"
 #include <armadillo>
 
 using namespace std;
@@ -101,9 +102,10 @@ int main() {
     map<int, string> attrFilters;
     map<int, string> structFilters;
     //For each entity create attr and structural bloom filters
+    int filterSize = 256;
     for (auto entity: entityData) {
         //Create attr bloom filter
-        BloomFilter attrFilter(256, 4);
+        BloomFilter attrFilter(filterSize, 4);
         vector<string> attributes = entity.second;
         //Add node attributes to bloom filter
         for (auto attr: attributes) {
@@ -155,6 +157,7 @@ int main() {
     inplace_trans(data, "lowmem");
 
     //Train kmeans clustering for 16 clusters
+    int noClusters = 3;
     Kmeans<float> model(3);
     model.fit(data, 10);
 
@@ -176,6 +179,53 @@ int main() {
         string outfile = "cluster" + to_string(i) +"filters.txt";
         clusterData.save(outfile, arma::csv_ascii);
     }
+
+    //Share cluster data with other workers
+
+    //Create cluster representative vectors
+    Mat<short> CRVs(filterSize, noClusters);
+    for (int i = 0; i < noClusters; i++) {
+        //Load cluster file into memory
+        string filename = "/root/CLionProjects/EntityResolution/cluster"+ to_string(i) +"filters.txt";
+        Mat<float> clusterData;
+        clusterData.load(filename, arma::csv_ascii);
+        //Remove node id column
+        clusterData.shed_col(0);
+        inplace_trans(clusterData, "lowmem");
+        //Create minhash signature of cluster
+        MinHash minHash(100, 256);
+        Col<short> crv = minHash.generateCRV(clusterData, 50);
+        //Store in matrix
+        CRVs.col(i) = crv;
+    }
+
+    //Generate local candidate sets
+    int bandLength = 10;
+    std::ostringstream s;
+    hash<string> stdhash;
+    map<unsigned long, vector<string>> lshBuckets;
+    for (int i = 0; i < noClusters; i++) {
+        Col<short> crv = CRVs.col(i);
+        crv.st().raw_print(s);
+        string crvStr = s.str();
+        crvStr = crvStr.substr(0, (crvStr.size() > 0) ? (crvStr.size()-1) : 0);
+        crvStr.erase(remove(crvStr.begin(), crvStr.end(), ' '), crvStr.end());
+
+        for (int j = 0; j < bandLength; j++) {
+            //Select appropriate band
+            string crvband = crvStr.substr(j*bandLength, (j+1)*bandLength);
+            unsigned long bucket = stdhash(crvband);
+            string name = "A" + to_string(i); //Party name + cluster id
+            lshBuckets[bucket].emplace_back(name);
+        }
+    }
+
+    //Share
+
+
+
+
+
 
 }
 
