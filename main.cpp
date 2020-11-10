@@ -17,6 +17,18 @@ std::vector<std::string> split(const std::string &s, char delimiter) {
     return tokens;
 }
 
+void writeToFile(string filename, map<int, string> filterMap) {
+    //Write bloom filters into file
+    ofstream stream(filename);
+    cout << "Writing filters" << endl;
+    for (auto filter : filterMap) {
+        stream << to_string(filter.first) << filter.second << '\n';
+        // Add '\n' character  ^^^^
+    }
+    stream << '\n';
+    stream.flush();
+}
+
 string replace(string str, string old, string replacement) {
     size_t index = 0;
     while (true) {
@@ -33,6 +45,8 @@ string replace(string str, string old, string replacement) {
         index += 2;
     }
 }
+
+
 
 int main() {
     map<int, vector<string>> entityData;
@@ -103,7 +117,7 @@ int main() {
     map<int, string> structFilters;
     //For each entity create attr and structural bloom filters
     int filterSize = 256;
-    for (auto entity: entityData) {
+    for (const auto& entity: entityData) {
         //Create attr bloom filter
         BloomFilter attrFilter(filterSize, 4);
         vector<string> attributes = entity.second;
@@ -136,15 +150,9 @@ int main() {
         cout << "Structural Filter created " << filterStr << endl;
     }
 
-    //Write bloom filters into file
-    ofstream stream("bloomfilters2.txt");
-    cout << "Writing filters" << endl;
-    for (auto filter : attrFilters) {
-        stream << to_string(filter.first) << filter.second << '\n';
-        // Add '\n' character  ^^^^
-    }
-    stream << '\n';
-    stream.flush();
+    //Write attr and struct filters separately into files
+    writeToFile("attrfilters.txt", attrFilters);
+    writeToFile("structfilters.txt", structFilters);
 
 
     //Read from bloom filter file(s)
