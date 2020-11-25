@@ -29,6 +29,25 @@ void writeToFile(string filename, map<int, string> filterMap) {
     stream.flush();
 }
 
+/**
+ * Seperate bloom filters from clusters given the prediction for corresponding data point
+ * @param data Matrix of bloom filters
+ * @param pred Column matrix of cluster prediction for associated data point
+ * @param clusterCount No of clusters
+ * @param outfilePrefix Save file name prefix (Without extension)
+ */
+void seperateClusters(Mat<float> &data, Mat<short> pred, int clusterCount, string outfilePrefix) {
+    for(int i = 0; i < clusterCount; i++) {
+        //Filter indices of filters belonging to cluster
+        Col<uword> indices = find(pred == i);
+        //Filter out cluster data
+        Mat<short> clusterData = conv_to<Mat<short>>::from(data.rows(indices));
+        //Write to file
+        string outfile = outfilePrefix + to_string(i) +".txt";
+        clusterData.save(outfile, arma::csv_ascii);
+    }
+}
+
 string replace(string str, string old, string replacement) {
     size_t index = 0;
     while (true) {
@@ -137,7 +156,7 @@ int main() {
         //Create structural filter
         BloomFilter structFilter(256, 4);
         //For each neighbour add selected attribute to bloom filter
-        for (auto neighbour: neighborhoodData[entity]) {
+        for (auto neighbour: neighborhoodData[entity.first]) {
             string selectedAttr = entityData[neighbour][0];
             structFilter.insert(selectedAttr);
         }
@@ -157,7 +176,7 @@ int main() {
 
     //Read from bloom filter file(s)
     Mat<float> data;
-    data.load("/root/CLionProjects/EntityResolution/bloomfilters2.csv", arma::csv_ascii);
+    data.load("/root/CLionProjects/EntityResolution/attrfilterss.txt", arma::csv_ascii);
 
     //Prepare data
     Mat<float> ids = data.col(0);
@@ -178,15 +197,12 @@ int main() {
     data = join_rows(ids, data);
     //For each cluster write bloom filters of said cluster into a separate file
     int clusterCount = model.getMeans().n_cols;
-    for(int i = 0; i < clusterCount; i++) {
-        //Filter indices of filters belonging to cluster
-        Col<uword> indices = find(pred == i);
-        //Filter out cluster data
-        Mat<short> clusterData = conv_to<Mat<short>>::from(data.rows(indices));
-        //Write to file
-        string outfile = "cluster" + to_string(i) +"filters.txt";
-        clusterData.save(outfile, arma::csv_ascii);
-    }
+    //Separate attr filters into clusters
+    seperateClusters(data, pred, clusterCount, "attrfilterscluster");
+    data.clear();
+    //Separate struct filters into clusters
+    data.load("/root/CLionProjects/EntityResolution/structfilters.txt", arma::csv_ascii);
+    seperateClusters(data, pred, clusterCount, "structfilterscluster");
 
     //Share cluster data with other workers
 
