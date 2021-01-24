@@ -3,6 +3,7 @@
 #include "Kmeans.h"
 #include "MinHash.hpp"
 #include <armadillo>
+#include <set>
 
 using namespace std;
 using namespace arma;
@@ -65,6 +66,153 @@ string replace(string str, string old, string replacement) {
     }
 }
 
+map<unsigned long, set<string>> combineLocalBuckets(vector<map<unsigned long, vector<string>>> totalWorkerBuckets) {
+    map<unsigned long, set<string>> combinedBuckets;
+    for (auto workerBuckets: totalWorkerBuckets) {
+        for (auto bucket: workerBuckets) {
+            unsigned long bucketID = bucket.first;
+            vector<string> clusters = bucket.second;
+            set<string> existingBucket = combinedBuckets[bucketID];
+            copy(clusters.begin(), clusters.end(), std::inserter(existingBucket, existingBucket.end()));
+        }
+    }
+
+    return combinedBuckets;
+}
+
+/**
+ * Method call for party coordinator to combine buckets of clusters given by each party to compute the similar clusters
+ * Clusters that fall under the same bucket will be considered similar
+ * Buckets that have clusters from all the parties will be kept since only they correspond to the possible common entities
+ * across all parties
+ * @param allBuckets Map of party IDs to mapping of bucket IDs to sets of clusters of that party
+ * @return Map of bucket ID to clusters across all parties
+ */
+map<unsigned long, map<string, set<string>>> getSimilarClusters(map<string, map<unsigned long, set<string>>> allBuckets) {
+    map<unsigned long, map<string, set<string>>> combinedBuckets; //Map of bucket to organisation-cluster
+    //Combine all organization buckets
+    for (auto orgBuckets: allBuckets) {
+        string partyID = orgBuckets.first;
+
+        for (auto bucket: orgBuckets.second) {
+            unsigned long bucketID = bucket.first;
+            set<string> clusters = bucket.second;
+            combinedBuckets[bucketID][partyID].insert(clusters.begin(), clusters.end());
+        }
+    }
+
+    //Filter buckets
+    map<unsigned long, map<string, set<string>>> filteredBuckets;
+
+    for (auto bucket: combinedBuckets) {
+        if (bucket.second.size() >= 3) {
+            filteredBuckets[bucket.first] = bucket.second;
+        }
+    }
+
+    return filteredBuckets;
+}
+
+/**
+ * Compare filters against each other and get the most similar.
+ * Classify as similar or not using a similarity threshold
+ * @param selfFilters Filter coming from the party doing the computation
+ * @param otherFilters Filter from the other party
+ * @param similarityThreshold Similarity threshold for classification
+ * @return Vector of two maps
+ */
+vector<map<string, string>> compareFilters(Mat<short> &selfFilters, Mat<short> &otherFilters, float similarityThreshold = 0.9) {
+    map<string, string> commonEntityMapSelf;
+    map<string, string> commonEntityMapOther;
+
+    Row<short> denominator = arma::sum(selfFilters, 0) + arma::sum(otherFilters, 0); //denominator of dice coeff
+
+    //For each filter in self cluster, compare against filters from other clusters and determine most similar filter
+    for (int i = 0; i < selfFilters.n_cols; i++) {
+        //Compute dice coefficient values
+        Col<short> selfFilter = selfFilters.col(i);
+        Row<short> numerator = 2 * arma::sum(otherFilters.each_col() % selfFilter, 0); //Numerator to compute the dice coeff
+        Row<float> diceCoeff = (conv_to<Mat<float>>::from(numerator) / conv_to<Mat<float>>::from(denominator));
+
+        //Get the most similar filter and check if it's meets the similarity threshold
+        uword maxIndex = arma::index_max(diceCoeff); //arg max
+        if (diceCoeff(maxIndex) > similarityThreshold) {
+            //Assign the two filters as the same common entity
+            commonEntityMapSelf[to_string(i)] = to_string(maxIndex);
+            commonEntityMapOther[to_string(maxIndex)] = to_string(i);
+        }
+
+    }
+
+    return {commonEntityMapSelf, commonEntityMapOther};
+}
+
+void combineFilterwiseResults(vector<map<string, string>> results) {
+    map<string, string> combinedEntityMap;
+    for (auto filterEntityMap: results) {
+        for (auto entity: filterEntityMap) {
+            combinedEntityMap[entity.first] = entity.second;
+        }
+    }
+}
+
+/**
+ * Compute the common entities accross all parties given a chainable pairwise common entity information
+ * @param pairwiseCommonEntities Map of party-ids to the mappings of common entities between other parties
+ */
+map<string, vector<string>> synchronizeCommonEntities(map<string, map<string, map<string, string>>> pairwiseCommonEntities) {
+    map<string, vector<string>> partyCommonEntityMap;
+    string firstPassEndParty;
+
+    //Get common entitiy ids of self
+    string currentParty = "A"; //Self party ID
+    string nextParty = pairwiseCommonEntities[currentParty].begin() -> first;
+    vector<string> currentPartyIds;
+    for (auto idPairs: pairwiseCommonEntities[currentParty][nextParty]) {
+        currentPartyIds.emplace_back(idPairs.first);
+    }
+
+    //First pass iteration through intermediate pairwise results
+    for(int i = 0; i < pairwiseCommonEntities.size(); i++) {
+        auto commonEntityMap = pairwiseCommonEntities[currentParty][nextParty];
+        //Iterate through common entity ids of currentParty with nextParty
+        vector<string> nextPartyIds;
+        for (string id: currentPartyIds) {
+            partyCommonEntityMap[currentParty].emplace_back(id);
+            //If id is present in the next party common entities, mark it to check in the next iterationa
+            if (commonEntityMap.find(id) != commonEntityMap.end()) {
+                nextPartyIds.emplace_back(pairwiseCommonEntities[currentParty][nextParty][id]);
+            }
+        }
+        //Party to iterate
+        currentParty = nextParty;
+        //Filtered next set of ids, when the loop terminates we will have entities of self which are common for all parties
+        currentPartyIds = nextPartyIds;
+        //Change pointer to next paty in the chain
+        nextParty = pairwiseCommonEntities[currentParty].begin() -> first;
+    }
+
+    //Second pass to compute common entities across all entities
+    for(int i = 0; i < pairwiseCommonEntities.size(); i++) {
+        //Replace with the entities of current party which are common for all parties
+        partyCommonEntityMap[currentParty] = currentPartyIds;
+
+        nextParty = pairwiseCommonEntities[currentParty].begin() -> first;
+        vector<string> nextPartyIds;
+        //For only the entities common for all, get mapping entities of next party
+        for (string id: currentPartyIds) {
+            nextPartyIds.emplace_back(pairwiseCommonEntities[currentParty][nextParty][id]);
+        }
+        //Party to iterate
+        currentParty = nextParty;
+        //Filtered next set of ids
+        currentPartyIds = nextPartyIds;
+        //Change pointer to next paty in the chain
+        nextParty = pairwiseCommonEntities[currentParty].begin() -> first;
+    }
+
+    return partyCommonEntityMap;
+}
 
 
 int main() {
@@ -176,7 +324,7 @@ int main() {
 
     //Read from bloom filter file(s)
     Mat<float> data;
-    data.load("/root/CLionProjects/EntityResolution/attrfilterss.txt", arma::csv_ascii);
+    data.load("/root/CLionProjects/EntityResolution/attrfilters.txt", arma::csv_ascii);
 
     //Prepare data
     Mat<float> ids = data.col(0);
@@ -207,7 +355,8 @@ int main() {
     //Share cluster data with other workers
 
     //Create cluster representative vectors
-    Mat<short> CRVs(filterSize, noClusters);
+    int minhashSize = 100;
+    Mat<short> CRVs(minhashSize, noClusters);
     for (int i = 0; i < noClusters; i++) {
         //Load cluster file into memory
         string filename = "/root/CLionProjects/EntityResolution/cluster"+ to_string(i) +"filters.txt";
@@ -217,9 +366,10 @@ int main() {
         clusterData.shed_col(0);
         inplace_trans(clusterData, "lowmem");
         //Create minhash signature of cluster
-        MinHash minHash(100, 256);
+        MinHash minHash(minhashSize, 256);
         Col<short> crv = minHash.generateCRV(clusterData, 50);
         //Store in matrix
+//        cout <<"test" << endl;
         CRVs.col(i) = crv;
     }
 
@@ -230,11 +380,12 @@ int main() {
     map<unsigned long, vector<string>> lshBuckets;
     for (int i = 0; i < noClusters; i++) {
         Col<short> crv = CRVs.col(i);
+        //Convert crv into a string without spaces
         crv.st().raw_print(s);
         string crvStr = s.str();
         crvStr = crvStr.substr(0, (crvStr.size() > 0) ? (crvStr.size()-1) : 0);
         crvStr.erase(remove(crvStr.begin(), crvStr.end(), ' '), crvStr.end());
-
+        //For each band of the crv string, put into buckets
         for (int j = 0; j < bandLength; j++) {
             //Select appropriate band
             string crvband = crvStr.substr(j*bandLength, (j+1)*bandLength);
@@ -242,6 +393,14 @@ int main() {
             string name = "A" + to_string(i); //Party name + cluster id
             lshBuckets[bucket].emplace_back(name);
         }
+    }
+
+    for (auto e: lshBuckets) {
+        cout << e.first << " ";
+        for (auto i: e.second) {
+            cout <<  i << " ";
+        }
+        cout << endl;
     }
 
     //Share
